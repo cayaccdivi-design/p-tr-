@@ -5,7 +5,7 @@ import {
   Upload, Layers, ZoomIn, ZoomOut, Maximize2,
   Lock, Unlock, Star, ChevronLeft, Loader, PanelLeft, PanelRight,
   Download, Store, ImagePlus, FileType, Image as ImageIcon,
-  Undo2, Redo2, RotateCcw, MousePointer2, Type, Sparkles,
+  Undo2, Redo2, RotateCcw, Type,
 } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import clsx from 'clsx'
@@ -448,19 +448,25 @@ export default function PsdEditorPage() {
   const stageRef = useRef(null)
   const fileInputRef = useRef(null)
 
-  // ── Fit to container after PSD loads ───────────────────────────────────────
+  // ── Fit to container after PSD loads (or window resize) ────────────────────
   useEffect(() => {
     if (!containerRef.current || !psdMeta) return
-    const rect = containerRef.current.getBoundingClientRect()
-    const scaleX = (rect.width  - 80) / psdMeta.width
-    const scaleY = (rect.height - 80) / psdMeta.height
-    const newFit = Math.min(scaleX, scaleY, 1)
-    setFitZoom(newFit)
-    setZoom(newFit)
-    setPan({
-      x: Math.max(0, (rect.width  - psdMeta.width  * newFit) / 2),
-      y: Math.max(0, (rect.height - psdMeta.height * newFit) / 2),
-    })
+    const refit = () => {
+      if (!containerRef.current || !psdMeta) return
+      const rect = containerRef.current.getBoundingClientRect()
+      const scaleX = (rect.width  - 80) / psdMeta.width
+      const scaleY = (rect.height - 80) / psdMeta.height
+      const newFit = Math.min(scaleX, scaleY, 1)
+      setFitZoom(newFit)
+      setZoom(newFit)
+      setPan({
+        x: Math.max(0, (rect.width  - psdMeta.width  * newFit) / 2),
+        y: Math.max(0, (rect.height - psdMeta.height * newFit) / 2),
+      })
+    }
+    refit()
+    window.addEventListener('resize', refit)
+    return () => window.removeEventListener('resize', refit)
   }, [psdMeta, showLeft, showRight])
 
   // ── PSD parsing ────────────────────────────────────────────────────────────

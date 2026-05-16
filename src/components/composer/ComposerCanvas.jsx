@@ -1,33 +1,33 @@
-import { useRef, useEffect, useState, useCallback } from 'react'
+import { forwardRef, useRef, useEffect, useState, useCallback } from 'react'
 import { Stage, Layer, Image as KonvaImage, Text as KonvaText, Transformer, Rect } from 'react-konva'
 import { useComposerStore } from '../../store/useComposerStore'
 
-function BackgroundLayer({ background, canvasSize }) {
+/* ─── Image cache hook ────────────────────────────────────────────── */
+function useImage(src) {
   const [img, setImg] = useState(null)
   useEffect(() => {
-    if (!background?.url) return
+    if (!src) { setImg(null); return }
+    let cancelled = false
     const image = new window.Image()
     image.crossOrigin = 'anonymous'
-    image.src = background.url
-    image.onload = () => setImg(image)
-    image.onerror = () => setImg(null)
-    return () => { image.onload = null; image.onerror = null }
-  }, [background?.url])
+    image.onload = () => { if (!cancelled) setImg(image) }
+    image.onerror = () => { if (!cancelled) setImg(null) }
+    image.src = src
+    return () => { cancelled = true }
+  }, [src])
+  return img
+}
+
+/* ─── Background ──────────────────────────────────────────────────── */
+function BackgroundLayer({ background, canvasSize }) {
+  const img = useImage(background?.url)
   if (!img) return null
   return <KonvaImage image={img} x={0} y={0} width={canvasSize.width} height={canvasSize.height} listening={false} />
 }
 
+/* ─── Image layer ─────────────────────────────────────────────────── */
 function ImageLayer({ layer, isSelected, onSelect, onDragEnd, onTransformEnd, nodeRef }) {
-  const [img, setImg] = useState(null)
-  useEffect(() => {
-    if (!layer.url) return
-    const image = new window.Image()
-    image.crossOrigin = 'anonymous'
-    image.src = layer.url
-    image.onload = () => setImg(image)
-    image.onerror = () => setImg(null)
-    return () => { image.onload = null; image.onerror = null }
-  }, [layer.url])
+  const img = useImage(layer.url)
   if (!img) return null
   return (
     <KonvaImage
@@ -49,6 +49,7 @@ function ImageLayer({ layer, isSelected, onSelect, onDragEnd, onTransformEnd, no
   )
 }
 
+/* ─── Text / sticker layer ────────────────────────────────────────── */
 function TextLayer({ layer, isSelected, onSelect, onDragEnd, onTransformEnd, nodeRef, onDblClick }) {
   const fontStyle = [layer.bold ? 'bold' : '', layer.italic ? 'italic' : ''].filter(Boolean).join(' ') || 'normal'
   return (
@@ -79,45 +80,50 @@ function TextLayer({ layer, isSelected, onSelect, onDragEnd, onTransformEnd, nod
   )
 }
 
+/* ─── Inline text editor overlay ──────────────────────────────────── */
 function TextEditorOverlay({ layer, stageRef, containerRef, onCommit, onCancel }) {
   const [value, setValue] = useState(layer.text || '')
   const inputRef = useRef(null)
-
-  const getPos = useCallback(() => {
-    if (!stageRef.current || !containerRef?.current) return { left: 0, top: 0 }
-    const stage = stageRef.current
-    const scale = stage.scaleX()
-    const stagePos = stage.container().getBoundingClientRect()
-    const containerPos = containerRef.current.getBoundingClientRect()
-    return {
-      left: Math.round(layer.x * scale + (stagePos.left - containerPos.left)),
-      top: Math.round(layer.y * scale + (stagePos.top - containerPos.top)),
-    }
-  }, [layer.x, layer.y, stageRef, containerRef])
 
   useEffect(() => {
     if (inputRef.current) { inputRef.current.focus(); inputRef.current.select() }
   }, [])
 
-  const { left, top } = getPos()
   const stage = stageRef.current
   const scale = stage ? stage.scaleX() : 1
-  const fontStyle = [layer.bold ? 'bold' : '', layer.italic ? 'italic' : ''].filter(Boolean).join(' ') || 'normal'
+  const stagePos = stage?.container().getBoundingClientRect()
+  const containerPos = containerRef?.current?.getBoundingClientRect()
+  const left = stagePos && containerPos ? Math.round(layer.x * scale + (stagePos.left - containerPos.left)) : 0
+  const top  = stagePos && containerPos ? Math.round(layer.y * scale + (stagePos.top  - containerPos.top))  : 0
 
   return (
-    <div style={{ position: 'absolute', left, top, zIndex: 50, transformOrigin: '0 0', transform: layer.rotation ? `rotate(${layer.rotation}deg)` : undefined }}>
+    <div style={{
+      position: 'absolute', left, top, zIndex: 50,
+      transformOrigin: '0 0',
+      transform: layer.rotation ? `rotate(${layer.rotation}deg)` : undefined,
+    }}>
       <textarea
         ref={inputRef} value={value}
         onChange={e => setValue(e.target.value)}
         onBlur={() => onCommit(value)}
-        onKeyDown={e => { if (e.key === 'Escape') { e.preventDefault(); onCancel() } if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onCommit(value) } }}
+        onKeyDown={e => {
+          if (e.key === 'Escape') { e.preventDefault(); onCancel() }
+          if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); onCommit(value) }
+        }}
         rows={Math.max(1, value.split('\n').length)}
         style={{
-          background: 'rgba(15,12,26,0.85)', border: '1.5px solid rgba(110,75,255,0.7)', borderRadius: 6,
-          color: layer.fill || '#ffffff', fontSize: (layer.fontSize || 32) * scale,
-          fontFamily: layer.fontFamily || 'Arial', fontWeight: layer.bold ? 'bold' : 'normal', fontStyle: layer.italic ? 'italic' : 'normal',
-          lineHeight: 1.3, padding: '2px 6px', resize: 'none', outline: 'none', minWidth: 60,
-          width: layer.width ? layer.width * scale : 'auto', backdropFilter: 'blur(8px)',
+          background: 'rgba(15,12,26,0.85)',
+          border: '1.5px solid rgba(110,75,255,0.7)',
+          borderRadius: 6,
+          color: layer.fill || '#ffffff',
+          fontSize: (layer.fontSize || 32) * scale,
+          fontFamily: layer.fontFamily || 'Arial',
+          fontWeight: layer.bold ? 'bold' : 'normal',
+          fontStyle: layer.italic ? 'italic' : 'normal',
+          lineHeight: 1.3, padding: '2px 6px',
+          resize: 'none', outline: 'none', minWidth: 60,
+          width: layer.width ? layer.width * scale : 'auto',
+          backdropFilter: 'blur(8px)',
           boxShadow: '0 0 0 3px rgba(110,75,255,0.25)',
         }}
       />
@@ -125,8 +131,10 @@ function TextEditorOverlay({ layer, stageRef, containerRef, onCommit, onCancel }
   )
 }
 
-export default function ComposerCanvas({ containerRef }) {
-  const stageRef = useRef(null)
+/* ─── Main component (forwardRef so the parent can call stageRef.toDataURL) ─ */
+const ComposerCanvas = forwardRef(function ComposerCanvas({ containerRef }, externalStageRef) {
+  const internalStageRef = useRef(null)
+  const stageRef = externalStageRef || internalStageRef
   const transformerRef = useRef(null)
   const nodeRefs = useRef({})
 
@@ -139,6 +147,7 @@ export default function ComposerCanvas({ containerRef }) {
 
   const [editingTextId, setEditingTextId] = useState(null)
 
+  // Bind transformer to selected layer's node.
   useEffect(() => {
     if (!transformerRef.current) return
     if (!selectedLayerId || editingTextId) {
@@ -146,8 +155,7 @@ export default function ComposerCanvas({ containerRef }) {
       transformerRef.current.getLayer()?.batchDraw()
       return
     }
-    const ref = nodeRefs.current[selectedLayerId]
-    const node = ref?.current
+    const node = nodeRefs.current[selectedLayerId]?.current
     if (node) {
       transformerRef.current.nodes([node])
       transformerRef.current.getLayer()?.batchDraw()
@@ -170,14 +178,16 @@ export default function ComposerCanvas({ containerRef }) {
     const scaleY = node.scaleY()
     node.scaleX(1); node.scaleY(1)
     updateLayer(id, {
-      x: Math.round(node.x()), y: Math.round(node.y()),
-      width: Math.round(Math.abs(node.width() * scaleX)),
+      x: Math.round(node.x()),
+      y: Math.round(node.y()),
+      width:  Math.round(Math.abs(node.width()  * scaleX)),
       height: Math.round(Math.abs(node.height() * scaleY)),
       rotation: Math.round(node.rotation()),
     })
   }, [updateLayer])
 
-  const sortedLayers = [...layers].sort((a, b) => (a.zIndex ?? 0) - (b.zIndex ?? 0))
+  // Layer order = array order (first = bottom-most, last = on top).
+  // No zIndex sort — keeps the data simple.
   const editingLayer = editingTextId ? layers.find(l => l.id === editingTextId) : null
 
   return (
@@ -186,7 +196,10 @@ export default function ComposerCanvas({ containerRef }) {
         ref={stageRef}
         width={canvasSize.width} height={canvasSize.height}
         onClick={handleStageClick} onTap={handleStageClick}
-        style={{ display: 'block', borderRadius: 8, boxShadow: '0 8px 48px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.06)' }}
+        style={{
+          display: 'block', borderRadius: 8,
+          boxShadow: '0 8px 48px rgba(0,0,0,0.6), 0 0 0 1px rgba(255,255,255,0.06)',
+        }}
       >
         <Layer listening={false}>
           <Rect x={0} y={0} width={canvasSize.width} height={canvasSize.height} fill="#1a1a2e" listening={false} />
@@ -194,31 +207,30 @@ export default function ComposerCanvas({ containerRef }) {
         </Layer>
 
         <Layer>
-          {sortedLayers.filter(l => l.visible !== false).map(layer => {
+          {layers.filter(l => l.visible !== false).map(layer => {
             if (!nodeRefs.current[layer.id]) nodeRefs.current[layer.id] = { current: null }
             const isSelected = selectedLayerId === layer.id && !editingTextId
+            const refSetter = node => { nodeRefs.current[layer.id] = { current: node } }
 
             if (layer.type === 'text' || layer.type === 'sticker') {
               return (
                 <TextLayer key={layer.id} layer={layer} isSelected={isSelected}
                   onSelect={selectLayer} onDragEnd={handleDragEnd} onTransformEnd={handleTransformEnd}
                   onDblClick={id => { setEditingTextId(id); selectLayer(id) }}
-                  nodeRef={node => { nodeRefs.current[layer.id] = { current: node } }}
-                />
+                  nodeRef={refSetter} />
               )
             }
             return (
               <ImageLayer key={layer.id} layer={layer} isSelected={isSelected}
                 onSelect={selectLayer} onDragEnd={handleDragEnd} onTransformEnd={handleTransformEnd}
-                nodeRef={node => { nodeRefs.current[layer.id] = { current: node } }}
-              />
+                nodeRef={refSetter} />
             )
           })}
 
           <Transformer
             ref={transformerRef}
-            rotateEnabled={true}
-            enabledAnchors={['top-left','top-center','top-right','middle-right','middle-left','bottom-left','bottom-center','bottom-right']}
+            rotateEnabled
+            enabledAnchors={['top-left', 'top-center', 'top-right', 'middle-right', 'middle-left', 'bottom-left', 'bottom-center', 'bottom-right']}
             borderStroke="rgba(110,75,255,0.9)" borderStrokeWidth={1.5}
             anchorStroke="rgba(110,75,255,0.9)" anchorFill="#fff" anchorSize={9} anchorCornerRadius={2}
             rotateAnchorOffset={28} padding={4} keepRatio={false}
@@ -231,9 +243,10 @@ export default function ComposerCanvas({ containerRef }) {
         <TextEditorOverlay
           layer={editingLayer} stageRef={stageRef} containerRef={containerRef}
           onCommit={value => { updateLayer(editingTextId, { text: value }); setEditingTextId(null) }}
-          onCancel={() => setEditingTextId(null)}
-        />
+          onCancel={() => setEditingTextId(null)} />
       )}
     </div>
   )
-}
+})
+
+export default ComposerCanvas
