@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import clsx from 'clsx'
@@ -6,6 +6,7 @@ import {
   Shield, Upload, Plus, Trash2, Edit3, Save, X,
   Image as ImageIcon, Terminal, Tag, Sparkles,
   CheckCircle, XCircle, Eye, EyeOff,
+  Search, Settings, Wand2, Power, Zap, Filter,
 } from 'lucide-react'
 import { useComposerStore } from '../store/useComposerStore'
 import { useAuthStore } from '../store/useAuthStore'
@@ -325,160 +326,425 @@ function ResourcesTab() {
   )
 }
 
-/* ─── CommandsTab ──────────────────────────────────────────────────────── */
+/* ─── AIPromptManager ──────────────────────────────────────────────────
+   Modern table-style manager for AI prompts. Replaces the old CommandsTab.
+   - Search + category filter
+   - Toggle on/off with animated switch
+   - Edit in modal (no inline jank)
+   - Reads/writes through the store, which triggers cross-tab realtime sync
+*/
 
-function CommandRow({ cmd }) {
-  const { categories, resources, updateCommand, removeCommand } = useComposerStore()
-  const [editing, setEditing] = useState(false)
-  const [confirmDel, setConfirmDel] = useState(false)
-  const [form, setForm] = useState({ ...cmd, resourceId: cmd.resourceId || '' })
+const MODES = [
+  { id: 'overlay',    label: 'Overlay',    desc: 'Sinh PNG trong suốt, đặt lên trên nền',  color: '#6e4bff' },
+  { id: 'background', label: 'Background', desc: 'Sinh ảnh full-frame, thay nền canvas',    color: '#14b8a6' },
+  { id: 'replace',    label: 'Replace',    desc: 'Sinh ảnh thay vào layer đang chọn',       color: '#f59e0b' },
+]
 
-  const cat = categories.find(c => c.id === cmd.categoryId)
-  const res = resources.find(r => r.id === cmd.resourceId)
+const MODELS = [
+  { id: 'flux',  label: 'Flux',         desc: 'Chất lượng cao, chi tiết tốt' },
+  { id: 'turbo', label: 'Turbo',        desc: 'Nhanh, ưu tiên tốc độ' },
+  { id: 'sdxl',  label: 'Stable XL',    desc: 'SDXL — phong cách đa dạng' },
+]
 
-  const save = () => {
-    updateCommand(cmd.id, { ...form, resourceId: form.resourceId || null })
-    setEditing(false)
+// Animated toggle switch (used for Active flag).
+function PromptSwitch({ on, onClick, size = 'md' }) {
+  const w = size === 'sm' ? 30 : 38
+  const h = size === 'sm' ? 17 : 21
+  return (
+    <button
+      onClick={onClick}
+      className="relative rounded-full transition-colors flex-shrink-0"
+      style={{
+        width: w, height: h,
+        background: on ? 'rgba(16,185,129,0.4)' : 'rgba(255,255,255,0.08)',
+        border: on ? '1px solid rgba(16,185,129,0.6)' : '1px solid rgba(255,255,255,0.12)',
+      }}
+      aria-pressed={on}
+      title={on ? 'Đang BẬT — bấm để TẮT' : 'Đang TẮT — bấm để BẬT'}
+    >
+      <motion.span
+        layout
+        transition={{ type: 'spring', stiffness: 600, damping: 35 }}
+        className="absolute top-0.5 rounded-full bg-white"
+        style={{
+          width: h - 4, height: h - 4,
+          left: on ? w - h + 1 : 2,
+          boxShadow: on ? '0 0 8px rgba(16,185,129,0.6)' : '0 1px 2px rgba(0,0,0,0.3)',
+        }}
+      />
+    </button>
+  )
+}
+
+// Edit modal — used for both "Add new" and "Edit existing".
+function PromptEditModal({ open, initial, onClose, onSave }) {
+  const { categories, resources } = useComposerStore()
+  const empty = {
+    name: '', keyword: '', prompt: '', model: 'flux', strength: 0.8,
+    mode: 'overlay', categoryId: '', icon: '✨', active: true, resourceId: '',
+  }
+  const [form, setForm] = useState(empty)
+
+  useEffect(() => {
+    if (open) setForm({ ...empty, ...(initial || {}), resourceId: initial?.resourceId || '' })
+  }, [open, initial?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  const isEdit = Boolean(initial?.id)
+
+  const handleSave = () => {
+    if (!form.name.trim() || !form.keyword.trim() || !form.prompt.trim()) return
+    onSave({
+      ...form,
+      strength: Math.max(0, Math.min(1, Number(form.strength) || 0.8)),
+      resourceId: form.resourceId || null,
+    })
   }
 
+  if (!open) return null
   return (
-    <motion.div layout
-      initial={{ opacity: 0, y: -8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, x: -20 }}
-      className="relative rounded-2xl p-4" style={CARD}>
-      {confirmDel && <ConfirmDelete onConfirm={() => removeCommand(cmd.id)} onCancel={() => setConfirmDel(false)} />}
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[100] flex items-center justify-center p-4"
+      style={{ background: 'rgba(5,5,12,0.7)', backdropFilter: 'blur(8px)' }}
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.95, y: 20 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.95, y: 20 }}
+        onClick={e => e.stopPropagation()}
+        className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-3xl p-6"
+        style={{
+          background: 'linear-gradient(180deg, rgba(20,15,40,0.98) 0%, rgba(15,11,30,0.98) 100%)',
+          border: '1px solid rgba(110,75,255,0.3)',
+          boxShadow: '0 20px 80px rgba(110,75,255,0.2)',
+        }}
+      >
+        <div className="flex items-center justify-between mb-5">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-2xl flex items-center justify-center"
+              style={{ background: 'rgba(110,75,255,0.2)', border: '1px solid rgba(110,75,255,0.4)' }}>
+              <Wand2 size={18} className="text-brand-300" />
+            </div>
+            <div>
+              <h3 className="font-display text-lg font-bold text-white">
+                {isEdit ? 'Sửa Prompt' : 'Tạo Prompt mới'}
+              </h3>
+              <p className="text-xs text-white/40">{isEdit ? form.id : 'Hệ thống AI ghép ảnh'}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-xl text-white/50 hover:text-white hover:bg-white/[0.06]">
+            <X size={18} />
+          </button>
+        </div>
 
-      {editing ? (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <div className="flex gap-2">
-            <input className={INPUT + ' w-14 text-center text-xl flex-shrink-0'} value={form.icon || ''} maxLength={4}
-              onChange={e => setForm(p => ({ ...p, icon: e.target.value }))} />
-            <input className={INPUT} placeholder="Keyword" value={form.keyword || ''}
+          <div className="sm:col-span-2 grid grid-cols-[auto_1fr_1fr] gap-2">
+            <input className={INPUT + ' w-14 text-center text-xl'} placeholder="✨" maxLength={4}
+              value={form.icon} onChange={e => setForm(p => ({ ...p, icon: e.target.value }))} />
+            <input className={INPUT} placeholder="Name * (vd: Add Sport Car)" value={form.name}
+              onChange={e => setForm(p => ({ ...p, name: e.target.value }))} />
+            <input className={INPUT} placeholder="Keyword * (vd: thêm xe)" value={form.keyword}
               onChange={e => setForm(p => ({ ...p, keyword: e.target.value }))} />
           </div>
-          <select className={INPUT} value={form.categoryId || ''} onChange={e => setForm(p => ({ ...p, categoryId: e.target.value }))}>
-            <option value="">— Danh mục —</option>
-            {categories.map(c => <option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}
-          </select>
-          <select className={INPUT} value={form.resourceId} onChange={e => setForm(p => ({ ...p, resourceId: e.target.value }))}>
-            <option value="">— Resource (tùy chọn) —</option>
-            {resources.filter(r => r.active).map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-          </select>
-          <label className="flex items-center gap-2 text-sm text-white/60 cursor-pointer">
-            <input type="checkbox" checked={form.active ?? true}
-              onChange={e => setForm(p => ({ ...p, active: e.target.checked }))}
-              className="accent-brand-500 w-4 h-4" /> Kích hoạt
-          </label>
+
           <div className="sm:col-span-2">
-            <textarea className={INPUT + ' resize-none'} rows={2} placeholder="Prompt AI..."
-              value={form.prompt || ''} onChange={e => setForm(p => ({ ...p, prompt: e.target.value }))} />
+            <label className="text-[10px] text-white/40 uppercase tracking-wider mb-1.5 block">
+              AI Prompt *
+            </label>
+            <textarea className={INPUT + ' resize-none'} rows={4}
+              placeholder="realistic sports car blended naturally into background, cinematic lighting..."
+              value={form.prompt}
+              onChange={e => setForm(p => ({ ...p, prompt: e.target.value }))} />
+            <p className="text-[10px] text-white/30 mt-1">
+              💡 Đây là prompt gửi cho AI. User input sẽ được merge vào sau từ khoá.
+            </p>
           </div>
-          <div className="sm:col-span-2 flex gap-2">
-            <button onClick={save} className="flex items-center gap-1 px-3 py-1.5 rounded-xl text-xs font-semibold text-emerald-300"
-              style={{ background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.3)' }}>
-              <Save size={11} /> Lưu
-            </button>
-            <button onClick={() => { setEditing(false); setForm({ ...cmd, resourceId: cmd.resourceId || '' }) }}
-              className="px-3 py-1.5 rounded-xl text-xs text-white/45"
-              style={{ background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.08)' }}>
-              <X size={11} />
-            </button>
+
+          <div>
+            <label className="text-[10px] text-white/40 uppercase tracking-wider mb-1.5 block">Model</label>
+            <select className={INPUT} value={form.model}
+              onChange={e => setForm(p => ({ ...p, model: e.target.value }))}>
+              {MODELS.map(m => <option key={m.id} value={m.id}>{m.label} — {m.desc}</option>)}
+            </select>
           </div>
-        </div>
-      ) : (
-        <div className="flex items-start gap-3">
-          <span className="text-2xl flex-shrink-0 leading-none pt-0.5">{cmd.icon}</span>
-          <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="font-semibold text-white text-sm">{cmd.keyword}</span>
-              {cat && <span className="px-2 py-0.5 rounded-full text-[10px] font-medium" style={{ background: `${cat.color}20`, color: cat.color, border: `1px solid ${cat.color}40` }}>{cat.icon} {cat.name}</span>}
-              {res && <span className="px-2 py-0.5 rounded-full text-[10px] text-cyan-300" style={{ background: 'rgba(77,208,255,0.1)', border: '1px solid rgba(77,208,255,0.25)' }}>{res.name}</span>}
-              {!res && cmd.resourceId === null && (
-                <span className="px-2 py-0.5 rounded-full text-[10px] text-amber-300" style={{ background: 'rgba(245,158,11,0.1)', border: '1px solid rgba(245,158,11,0.25)' }}>Random</span>
-              )}
+
+          <div>
+            <label className="text-[10px] text-white/40 uppercase tracking-wider mb-1.5 block">Category</label>
+            <select className={INPUT} value={form.categoryId}
+              onChange={e => setForm(p => ({ ...p, categoryId: e.target.value }))}>
+              <option value="">— Chọn —</option>
+              {categories.map(c => <option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-[10px] text-white/40 uppercase tracking-wider mb-1.5 block">Mode</label>
+            <div className="space-y-1.5">
+              {MODES.map(m => (
+                <button
+                  key={m.id} onClick={() => setForm(p => ({ ...p, mode: m.id }))}
+                  className="w-full text-left p-2 rounded-xl transition-all flex items-start gap-2"
+                  style={{
+                    background: form.mode === m.id ? `${m.color}1a` : 'rgba(255,255,255,0.03)',
+                    border: form.mode === m.id ? `1px solid ${m.color}66` : '1px solid rgba(255,255,255,0.06)',
+                  }}
+                >
+                  <span className="w-3 h-3 rounded-full mt-1 flex-shrink-0"
+                    style={{ background: form.mode === m.id ? m.color : 'rgba(255,255,255,0.1)' }} />
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-white">{m.label}</p>
+                    <p className="text-[10px] text-white/40 leading-tight">{m.desc}</p>
+                  </div>
+                </button>
+              ))}
             </div>
-            <p className="text-xs text-white/35 mt-1 line-clamp-2">{cmd.prompt}</p>
           </div>
-          <div className="flex items-center gap-2 flex-shrink-0">
-            <ToggleActive active={cmd.active} onChange={() => updateCommand(cmd.id, { active: !cmd.active })} />
-            <button onClick={() => setEditing(true)} className="p-1.5 rounded-lg text-brand-300 hover:bg-brand-500/10 transition-all"><Edit3 size={14} /></button>
-            <button onClick={() => setConfirmDel(true)} className="p-1.5 rounded-lg text-rose-400 hover:bg-rose-500/10 transition-all"><Trash2 size={14} /></button>
+
+          <div className="space-y-3">
+            <div>
+              <div className="flex justify-between items-center mb-1.5">
+                <label className="text-[10px] text-white/40 uppercase tracking-wider">
+                  Strength
+                </label>
+                <span className="text-xs font-mono text-brand-300">{Number(form.strength).toFixed(2)}</span>
+              </div>
+              <input type="range" min={0} max={1} step={0.05} value={form.strength}
+                onChange={e => setForm(p => ({ ...p, strength: Number(e.target.value) }))}
+                className="w-full accent-brand-500" />
+              <p className="text-[10px] text-white/30 mt-1">Độ tuân theo prompt (0=tự do, 1=bám sát)</p>
+            </div>
+
+            <div>
+              <label className="text-[10px] text-white/40 uppercase tracking-wider mb-1.5 block">
+                Fallback Resource (offline)
+              </label>
+              <select className={INPUT} value={form.resourceId}
+                onChange={e => setForm(p => ({ ...p, resourceId: e.target.value }))}>
+                <option value="">— Random theo category —</option>
+                {resources.filter(r => r.active).map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
+              </select>
+            </div>
+
+            <label className="flex items-center gap-3 p-3 rounded-xl cursor-pointer"
+              style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
+              <PromptSwitch on={form.active} onClick={() => setForm(p => ({ ...p, active: !p.active }))} />
+              <div className="text-xs">
+                <p className="font-semibold text-white">Kích hoạt prompt</p>
+                <p className="text-white/40 text-[10px]">{form.active ? 'User có thể dùng' : 'Đang ẩn khỏi user'}</p>
+              </div>
+            </label>
           </div>
         </div>
-      )}
+
+        <div className="flex gap-2 mt-5 pt-4" style={{ borderTop: '1px solid rgba(255,255,255,0.06)' }}>
+          <PrimaryBtn icon={Save} onClick={handleSave}
+            disabled={!form.name.trim() || !form.keyword.trim() || !form.prompt.trim()}>
+            {isEdit ? 'Lưu thay đổi' : 'Tạo prompt'}
+          </PrimaryBtn>
+          <GhostBtn onClick={onClose}>Hủy</GhostBtn>
+        </div>
+      </motion.div>
     </motion.div>
   )
 }
 
-function CommandsTab() {
-  const { commands, categories, resources, addCommand } = useComposerStore()
+// Single row in the prompt list. Compact layout, click anywhere to edit.
+function PromptRow({ prompt, onEdit }) {
+  const { categories, togglePrompt, removePrompt } = useComposerStore()
   const { toast } = useAppStore()
-  const [showAdd, setShowAdd] = useState(false)
-  const empty = { keyword: '', categoryId: '', resourceId: '', prompt: '', icon: '✨', active: true }
-  const [form, setForm] = useState(empty)
+  const [confirmDel, setConfirmDel] = useState(false)
+  const cat = categories.find(c => c.id === prompt.categoryId)
+  const mode = MODES.find(m => m.id === prompt.mode) || MODES[0]
 
-  const handleSave = () => {
-    if (!form.keyword.trim()) { toast('Cần nhập keyword', 'error'); return }
-    addCommand({ ...form, resourceId: form.resourceId || null })
-    setForm(empty)
-    setShowAdd(false)
-    toast('Đã thêm lệnh', 'success')
+  return (
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, x: -20 }}
+      className="relative rounded-2xl p-4 group"
+      style={{
+        ...CARD,
+        opacity: prompt.active ? 1 : 0.55,
+      }}
+    >
+      {confirmDel && (
+        <ConfirmDelete
+          onConfirm={() => { removePrompt(prompt.id); toast('Đã xoá prompt', 'success') }}
+          onCancel={() => setConfirmDel(false)} />
+      )}
+
+      <div className="flex items-start gap-3">
+        <span className="text-2xl flex-shrink-0 leading-none pt-0.5">{prompt.icon || '✨'}</span>
+
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap mb-1">
+            <span className="font-semibold text-white text-sm">{prompt.name}</span>
+            <span className="font-mono text-[11px] px-1.5 py-0.5 rounded text-cyan-300"
+              style={{ background: 'rgba(77,208,255,0.08)', border: '1px solid rgba(77,208,255,0.2)' }}>
+              "{prompt.keyword}"
+            </span>
+          </div>
+          <p className="text-xs text-white/45 line-clamp-1 mb-1.5">{prompt.prompt}</p>
+          <div className="flex items-center gap-1.5 flex-wrap">
+            {cat && (
+              <span className="px-1.5 py-0.5 rounded text-[10px] font-medium"
+                style={{ background: `${cat.color}20`, color: cat.color, border: `1px solid ${cat.color}40` }}>
+                {cat.icon} {cat.name}
+              </span>
+            )}
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium"
+              style={{ background: `${mode.color}20`, color: mode.color, border: `1px solid ${mode.color}40` }}>
+              {mode.label}
+            </span>
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono text-white/45"
+              style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
+              {prompt.model || 'flux'}
+            </span>
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono text-white/45"
+              style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.06)' }}>
+              s={Number(prompt.strength ?? 0.8).toFixed(2)}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <PromptSwitch on={prompt.active} onClick={() => togglePrompt(prompt.id)} />
+          <button onClick={() => onEdit(prompt)}
+            className="p-2 rounded-lg text-brand-300 hover:bg-brand-500/10 transition-all">
+            <Edit3 size={14} />
+          </button>
+          <button onClick={() => setConfirmDel(true)}
+            className="p-2 rounded-lg text-rose-400 hover:bg-rose-500/10 transition-all">
+            <Trash2 size={14} />
+          </button>
+        </div>
+      </div>
+    </motion.div>
+  )
+}
+
+function AIPromptManager() {
+  const { prompts, categories, addPrompt, updatePrompt } = useComposerStore()
+  const { toast } = useAppStore()
+  const [search, setSearch] = useState('')
+  const [filterCat, setFilterCat] = useState('')
+  const [filterStatus, setFilterStatus] = useState('all') // all|on|off
+  const [editing, setEditing] = useState(null)            // null | 'new' | promptObject
+  const isOpen = editing !== null
+
+  // Memo + debounced filtering. Since list size is small (<200), this is
+  // plenty performant without an actual debounce primitive.
+  const filtered = useMemo(() => {
+    const q = search.toLowerCase().trim()
+    return prompts.filter(p => {
+      if (filterCat && p.categoryId !== filterCat) return false
+      if (filterStatus === 'on' && !p.active) return false
+      if (filterStatus === 'off' && p.active) return false
+      if (!q) return true
+      return (
+        (p.name || '').toLowerCase().includes(q) ||
+        (p.keyword || '').toLowerCase().includes(q) ||
+        (p.prompt || '').toLowerCase().includes(q)
+      )
+    })
+  }, [prompts, search, filterCat, filterStatus])
+
+  const handleSave = (form) => {
+    if (editing === 'new') {
+      addPrompt(form)
+      toast('✅ Đã tạo prompt — sẵn sàng dùng ngay', 'success')
+    } else if (editing?.id) {
+      updatePrompt(editing.id, form)
+      toast('💾 Đã lưu prompt — đang đồng bộ', 'success')
+    }
+    setEditing(null)
   }
+
+  const stats = useMemo(() => ({
+    total:  prompts.length,
+    active: prompts.filter(p => p.active).length,
+  }), [prompts])
 
   return (
     <div>
-      <SectionHeader icon={Terminal} title={`Commands (${commands.length})`}
-        action={<AddToggleBtn onClick={() => setShowAdd(v => !v)} open={showAdd} label="Thêm lệnh" />} />
+      <SectionHeader
+        icon={Wand2}
+        title={
+          <span className="flex items-center gap-2">
+            AI Prompt Manager
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono"
+              style={{ background: 'rgba(16,185,129,0.12)', color: '#34d399', border: '1px solid rgba(16,185,129,0.3)' }}>
+              {stats.active}/{stats.total}
+            </span>
+          </span>
+        }
+        action={
+          <button onClick={() => setEditing('new')}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-white"
+            style={{
+              background: 'linear-gradient(135deg,#6e4bff,#4dd0ff)',
+              boxShadow: '0 4px 16px rgba(110,75,255,0.35)',
+            }}>
+            <Plus size={13} /> Add Prompt
+          </button>
+        }
+      />
 
-      <AnimatePresence>
-        {showAdd && (
-          <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
-            className="overflow-hidden mb-6">
-            <div className="rounded-2xl p-5" style={CARD}>
-              <p className="text-xs font-semibold text-brand-300 mb-4">+ Thêm Command mới</p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div className="flex gap-2">
-                  <input className={INPUT + ' w-14 text-center text-xl flex-shrink-0'} placeholder="✨" maxLength={4}
-                    value={form.icon} onChange={e => setForm(p => ({ ...p, icon: e.target.value }))} />
-                  <input className={INPUT} placeholder="Keyword *" value={form.keyword}
-                    onChange={e => setForm(p => ({ ...p, keyword: e.target.value }))} />
-                </div>
-                <select className={INPUT} value={form.categoryId} onChange={e => setForm(p => ({ ...p, categoryId: e.target.value }))}>
-                  <option value="">— Chọn danh mục —</option>
-                  {categories.map(c => <option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}
-                </select>
-                <select className={INPUT} value={form.resourceId} onChange={e => setForm(p => ({ ...p, resourceId: e.target.value }))}>
-                  <option value="">— Resource (tùy chọn) —</option>
-                  {resources.filter(r => r.active).map(r => <option key={r.id} value={r.id}>{r.name}</option>)}
-                </select>
-                <label className="flex items-center gap-2 text-sm text-white/60 cursor-pointer">
-                  <input type="checkbox" checked={form.active}
-                    onChange={e => setForm(p => ({ ...p, active: e.target.checked }))}
-                    className="accent-brand-500 w-4 h-4" /> Kích hoạt
-                </label>
-                <div className="sm:col-span-2">
-                  <textarea className={INPUT + ' resize-none'} rows={3}
-                    placeholder="Prompt AI (mô tả cách xử lý ảnh)..."
-                    value={form.prompt} onChange={e => setForm(p => ({ ...p, prompt: e.target.value }))} />
-                </div>
-              </div>
-              <div className="flex gap-2 mt-4">
-                <PrimaryBtn icon={Save} onClick={handleSave}>Lưu lệnh</PrimaryBtn>
-                <GhostBtn onClick={() => { setShowAdd(false); setForm(empty) }}>Hủy</GhostBtn>
-              </div>
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* Search + filter bar */}
+      <div className="flex flex-wrap gap-2 mb-5">
+        <div className="relative flex-1 min-w-[200px]">
+          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-white/30" />
+          <input
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder="Tìm theo tên / keyword / prompt..."
+            className={INPUT + ' pl-9'}
+          />
+        </div>
+        <select className={INPUT + ' max-w-[180px]'} value={filterCat} onChange={e => setFilterCat(e.target.value)}>
+          <option value="">Tất cả category</option>
+          {categories.map(c => <option key={c.id} value={c.id}>{c.icon} {c.name}</option>)}
+        </select>
+        <div className="flex rounded-xl overflow-hidden"
+          style={{ background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)' }}>
+          {[
+            { id: 'all', label: 'All' },
+            { id: 'on',  label: 'On'  },
+            { id: 'off', label: 'Off' },
+          ].map(opt => (
+            <button key={opt.id}
+              onClick={() => setFilterStatus(opt.id)}
+              className={clsx('px-3 py-2 text-xs font-medium transition-colors',
+                filterStatus === opt.id
+                  ? 'bg-brand-500/20 text-brand-300'
+                  : 'text-white/40 hover:text-white/70')}>
+              {opt.label}
+            </button>
+          ))}
+        </div>
+      </div>
 
-      {commands.length === 0
-        ? <EmptyState icon={Terminal} message="Chưa có lệnh nào." />
+      {filtered.length === 0
+        ? <EmptyState icon={Wand2}
+            message={prompts.length === 0
+              ? 'Chưa có prompt nào. Bấm "Add Prompt" để tạo prompt đầu tiên!'
+              : 'Không khớp bộ lọc — thử bỏ search hoặc đổi category.'} />
         : (
-          <div className="space-y-3">
-            <AnimatePresence>
-              {commands.map(cmd => <CommandRow key={cmd.id} cmd={cmd} />)}
+          <div className="space-y-2.5">
+            <AnimatePresence initial={false} mode="popLayout">
+              {filtered.map(p => <PromptRow key={p.id} prompt={p} onEdit={setEditing} />)}
             </AnimatePresence>
           </div>
         )}
+
+      <AnimatePresence>
+        {isOpen && (
+          <PromptEditModal
+            open={isOpen}
+            initial={editing === 'new' ? null : editing}
+            onClose={() => setEditing(null)}
+            onSave={handleSave}
+          />
+        )}
+      </AnimatePresence>
     </div>
   )
 }
@@ -536,7 +802,7 @@ function CategoryCard({ cat, rCount, cCount }) {
           </div>
           <div className="flex gap-3 text-[11px]">
             <span className="px-2 py-0.5 rounded-lg" style={{ background: `${cat.color}15`, color: cat.color }}>{rCount} resources</span>
-            <span className="px-2 py-0.5 rounded-lg" style={{ background: `${cat.color}15`, color: cat.color }}>{cCount} commands</span>
+            <span className="px-2 py-0.5 rounded-lg" style={{ background: `${cat.color}15`, color: cat.color }}>{cCount} prompts</span>
           </div>
           <div className="flex gap-2">
             <button onClick={() => { setEditing(true); setForm(cat) }}
@@ -557,7 +823,7 @@ function CategoryCard({ cat, rCount, cCount }) {
 }
 
 function CategoriesTab() {
-  const { categories, resources, commands, addCategory } = useComposerStore()
+  const { categories, resources, prompts, addCategory } = useComposerStore()
   const { toast } = useAppStore()
   const [showAdd, setShowAdd] = useState(false)
   const empty = { name: '', icon: '📁', color: '#6e4bff' }
@@ -611,7 +877,7 @@ function CategoriesTab() {
               {categories.map(cat => (
                 <CategoryCard key={cat.id} cat={cat}
                   rCount={resources.filter(r => r.categoryId === cat.id).length}
-                  cCount={commands.filter(c => c.categoryId === cat.id).length} />
+                  cCount={prompts.filter(c => c.categoryId === cat.id).length} />
               ))}
             </AnimatePresence>
           </div>
@@ -781,13 +1047,125 @@ function EffectsTab() {
   )
 }
 
+/* ─── AISettingsTab ────────────────────────────────────────────────────
+   Global AI provider configuration. Affects every prompt the engine sends.
+*/
+
+function AISettingsTab() {
+  const { aiSettings, updateAISettings, resetAISettings } = useComposerStore()
+  const { toast } = useAppStore()
+  const [form, setForm] = useState(aiSettings)
+  const [dirty, setDirty] = useState(false)
+
+  useEffect(() => { setForm(aiSettings); setDirty(false) }, [aiSettings])
+
+  const change = (patch) => { setForm(p => ({ ...p, ...patch })); setDirty(true) }
+  const save = () => {
+    updateAISettings(form)
+    setDirty(false)
+    toast('💾 Đã lưu cấu hình AI', 'success')
+  }
+  const reset = () => {
+    if (!window.confirm('Reset cấu hình AI về mặc định?')) return
+    resetAISettings()
+    toast('Đã reset cấu hình AI', 'info')
+  }
+
+  return (
+    <div>
+      <SectionHeader icon={Settings} title="AI Settings" action={
+        <div className="flex gap-2">
+          {dirty && <PrimaryBtn icon={Save} onClick={save}>Lưu</PrimaryBtn>}
+          <GhostBtn onClick={reset} icon={Power}>Reset</GhostBtn>
+        </div>
+      } />
+
+      <div className="rounded-2xl p-5 space-y-4" style={CARD}>
+        <div>
+          <label className="text-[10px] text-white/40 uppercase tracking-wider mb-1.5 block">Provider</label>
+          <div className="grid grid-cols-2 gap-2">
+            {[
+              { id: 'pollinations', label: 'Pollinations', desc: 'Free, không cần API key' },
+              { id: 'mock',         label: 'Offline Mock',  desc: 'Chỉ dùng resource fallback' },
+            ].map(p => (
+              <button key={p.id} onClick={() => change({ provider: p.id })}
+                className="text-left p-3 rounded-xl transition-all"
+                style={{
+                  background: form.provider === p.id ? 'rgba(110,75,255,0.15)' : 'rgba(255,255,255,0.03)',
+                  border: form.provider === p.id ? '1px solid rgba(110,75,255,0.45)' : '1px solid rgba(255,255,255,0.06)',
+                }}>
+                <p className="text-sm font-semibold text-white">{p.label}</p>
+                <p className="text-[10px] text-white/45 leading-tight mt-0.5">{p.desc}</p>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <div>
+            <label className="text-[10px] text-white/40 uppercase tracking-wider mb-1.5 block">Endpoint</label>
+            <input className={INPUT} value={form.endpoint || ''}
+              onChange={e => change({ endpoint: e.target.value })}
+              placeholder="https://image.pollinations.ai/prompt/" />
+          </div>
+          <div>
+            <label className="text-[10px] text-white/40 uppercase tracking-wider mb-1.5 block">Default Model</label>
+            <select className={INPUT} value={form.defaultModel}
+              onChange={e => change({ defaultModel: e.target.value })}>
+              {MODELS.map(m => <option key={m.id} value={m.id}>{m.label} — {m.desc}</option>)}
+            </select>
+          </div>
+          <div>
+            <label className="text-[10px] text-white/40 uppercase tracking-wider mb-1.5 block">
+              Timeout (ms)
+            </label>
+            <input type="number" className={INPUT} value={form.timeoutMs}
+              onChange={e => change({ timeoutMs: Number(e.target.value) || 30000 })}
+              min={5000} max={120000} step={1000} />
+          </div>
+          <div>
+            <label className="text-[10px] text-white/40 uppercase tracking-wider mb-1.5 block">
+              Prompt Suffix (style)
+            </label>
+            <input className={INPUT} value={form.promptSuffix || ''}
+              onChange={e => change({ promptSuffix: e.target.value })}
+              placeholder="cinematic, 4k, photorealistic" />
+          </div>
+        </div>
+
+        <div>
+          <label className="text-[10px] text-white/40 uppercase tracking-wider mb-1.5 block">
+            Negative Prompt
+          </label>
+          <textarea className={INPUT + ' resize-none'} rows={2} value={form.negativePrompt || ''}
+            onChange={e => change({ negativePrompt: e.target.value })}
+            placeholder="low quality, blurry, watermark..." />
+          <p className="text-[10px] text-white/30 mt-1">
+            Áp dụng cho mọi request — list các thứ AI cần tránh.
+          </p>
+        </div>
+
+        <div className="flex items-start gap-2 p-3 rounded-xl"
+          style={{ background: 'rgba(110,75,255,0.08)', border: '1px solid rgba(110,75,255,0.2)' }}>
+          <Zap size={14} className="text-brand-300 flex-shrink-0 mt-0.5" />
+          <div className="text-[11px] text-white/60 leading-relaxed">
+            Cấu hình này áp dụng <strong>realtime</strong> — không cần reload trang.
+            Mọi tab đang mở sẽ tự đồng bộ qua <code className="text-cyan-300">storage</code> event.
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 /* ─── Page shell ───────────────────────────────────────────────────────── */
 
 const TABS = [
-  { id: 'resources',  label: 'Resources',  icon: ImageIcon, Component: ResourcesTab  },
-  { id: 'commands',   label: 'Commands',   icon: Terminal,  Component: CommandsTab   },
-  { id: 'categories', label: 'Categories', icon: Tag,       Component: CategoriesTab },
-  { id: 'effects',    label: 'Effects',    icon: Sparkles,  Component: EffectsTab    },
+  { id: 'prompts',    label: 'AI Prompts', icon: Wand2,     Component: AIPromptManager },
+  { id: 'resources',  label: 'Resources',  icon: ImageIcon, Component: ResourcesTab    },
+  { id: 'categories', label: 'Categories', icon: Tag,       Component: CategoriesTab   },
+  { id: 'effects',    label: 'Effects',    icon: Sparkles,  Component: EffectsTab      },
+  { id: 'settings',   label: 'AI Settings',icon: Settings,  Component: AISettingsTab   },
 ]
 
 function TabBtn({ active, onClick, icon: Icon, label }) {
@@ -805,12 +1183,18 @@ function TabBtn({ active, onClick, icon: Icon, label }) {
 export default function AdminComposerPage() {
   const navigate = useNavigate()
   const isAdmin = useAuthStore(s => s.isAdmin())
-  const { resources, commands, categories, effects } = useComposerStore()
-  const [activeTab, setActiveTab] = useState('resources')
+  const { resources, prompts, categories, effects } = useComposerStore()
+  const [activeTab, setActiveTab] = useState('prompts')
 
   if (!isAdmin) { navigate('/'); return null }
 
-  const counts = { resources: resources.length, commands: commands.length, categories: categories.length, effects: effects.length }
+  const counts = {
+    prompts:    prompts.length,
+    resources:  resources.length,
+    categories: categories.length,
+    effects:    effects.length,
+    settings:   '⚙',
+  }
   const ActiveComponent = TABS.find(t => t.id === activeTab)?.Component
 
   return (
