@@ -25,6 +25,8 @@ const CollagePage         = lazy(() => import('./pages/CollagePage'))
 const ComposerPage        = lazy(() => import('./pages/ComposerPage'))
 const AdminComposerPage   = lazy(() => import('./pages/AdminComposerPage'))
 const CustomerEditorPage  = lazy(() => import('./pages/CustomerEditorPage'))
+const MockupPage          = lazy(() => import('./pages/MockupPage'))
+const AdminMockupPage     = lazy(() => import('./pages/AdminMockupPage'))
 
 function ProtectedRoute({ children }) {
   const { user } = useAuthStore()
@@ -76,6 +78,8 @@ export default function App() {
         <Route path="/downloads" element={<ProtectedRoute><DownloadsPage /></ProtectedRoute>} />
         <Route path="/composer" element={<ProtectedRoute>{lazy_(ComposerPage)}</ProtectedRoute>} />
         <Route path="/admin/composer" element={<ProtectedRoute>{lazy_(AdminComposerPage)}</ProtectedRoute>} />
+        <Route path="/mockup" element={<ProtectedRoute>{lazy_(MockupPage)}</ProtectedRoute>} />
+        <Route path="/admin/mockup" element={<ProtectedRoute>{lazy_(AdminMockupPage)}</ProtectedRoute>} />
       </Route>
       <Route path="/editor/:productId" element={<ProtectedRoute>{lazy_(CustomerEditorPage)}</ProtectedRoute>} />
       <Route path="*" element={<Navigate to="/" replace />} />

@@ -4,7 +4,7 @@ import {
   LayoutDashboard, ShoppingBag, Gift, Scissors,
   FolderOpen, LogOut, X, ChevronLeft, ChevronRight,
   Sparkles, Layers, LayoutGrid, Bell, Code2, BookOpen,
-  ImagePlus, Shield, Download,
+  ImagePlus, Shield, Download, Swords,
 } from 'lucide-react'
 import { useAuthStore } from '../../store/useAuthStore'
 import { useAppStore } from '../../store/useAppStore'
@@ -22,6 +22,8 @@ const NAV_ITEMS = [
   { to: '/downloads',       icon: Download,        label: 'Đã tải',         loginOnly: true },
   { to: '/psd-editor',      icon: Layers,          label: 'PSD Editor',     badge: 'NEW', adminOnly: true },
   { to: '/admin/composer',  icon: Shield,          label: 'Admin Composer', badge: 'ADMIN', adminOnly: true },
+  { to: '/mockup',          icon: Swords,          label: 'Item Mockup',    badge: 'AI' },
+  { to: '/admin/mockup',    icon: Shield,          label: 'Admin Mockup',   badge: 'ADMIN', adminOnly: true },
 ]
 
 // Utility cluster — secondary destinations rendered as small icon buttons
