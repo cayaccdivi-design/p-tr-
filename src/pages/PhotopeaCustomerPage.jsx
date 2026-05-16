@@ -233,6 +233,9 @@ export default function PhotopeaCustomerPage() {
   }, [layers, template])
 
   // ── Photopea ready handler ─────────────────────────────────────────
+  // Convert the persisted data URL back into an ArrayBuffer and post
+  // it to the iframe. This works for any PSD size, unlike the old
+  // approach which embedded the data URL into the iframe URL hash.
   const refreshLayers = useCallback(async () => {
     if (!frameRef.current) return
     const { echoes } = await frameRef.current.run(SCRIPT_LIST_LAYERS)
@@ -240,10 +243,24 @@ export default function PhotopeaCustomerPage() {
     if (echo) setLayers(JSON.parse(echo.slice('LAYERS:'.length)))
   }, [])
 
-  const handleFrameReady = useCallback(async () => {
+  const openTemplatePsd = useCallback(async () => {
+    if (!frameRef.current || !template?.psdDataUrl) return
+    try {
+      setBusy(true); setBusyMsg('Đang mở PSD trong Photopea…')
+      await frameRef.current.loadPsd(template.psdDataUrl)
+      await refreshLayers()
+    } catch (e) {
+      console.error(e)
+      toast(e?.message || 'Không mở được PSD', 'error')
+    } finally {
+      setBusy(false); setBusyMsg('')
+    }
+  }, [template, refreshLayers, toast])
+
+  const handleFrameReady = useCallback(() => {
     setPhotopeaReady(true)
-    try { await refreshLayers() } catch (e) { /* ignore */ }
-  }, [refreshLayers])
+    openTemplatePsd()
+  }, [openTemplatePsd])
 
   // ── Edit handlers ──────────────────────────────────────────────────
   const handleTextEdit = useCallback(async (layerName, role, text) => {
@@ -270,11 +287,8 @@ export default function PhotopeaCustomerPage() {
     if (!frameRef.current || !template?.psdDataUrl) return
     try {
       setBusy(true); setBusyMsg('Đang reset về bản gốc…')
-      // Close the doc and re-open the original PSD.
-      await frameRef.current.run('try { app.activeDocument.close(SaveOptions.DONOTSAVECHANGES); } catch(e) {} app.echoToOE("CLEARED");')
-      await frameRef.current.run(`app.open(${JSON.stringify(template.psdDataUrl)});`)
-      // Photopea needs a beat to load the doc; small delay before listing layers.
-      await new Promise((r) => setTimeout(r, 600))
+      // loadPsd handles closing existing docs internally.
+      await frameRef.current.loadPsd(template.psdDataUrl)
       await refreshLayers()
       setValues({})
       toast('Đã reset về bản gốc', 'success')
@@ -444,7 +458,6 @@ export default function PhotopeaCustomerPage() {
         <main className="flex-1 min-w-0 relative">
           <PhotopeaFrame
             ref={frameRef}
-            initialPsdDataUrl={template.psdDataUrl}
             onReady={handleFrameReady}
           />
           {busy && (

@@ -3,152 +3,187 @@
 //
 // Photopea documents itself at https://www.photopea.com/api/. The host
 // page communicates via window.postMessage. Two flavours of messages
-// flow back from the iframe:
-//   1. Strings — these are the return values from `app.echoToOE(...)`
-//      we sprinkle inside our scripts, plus a final `"done"` that
-//      Photopea emits automatically when a script finishes.
-//   2. ArrayBuffers — produced by `app.activeDocument.saveToOE("psd")`
-//      and friends. We collect them in the order they arrive.
+// flow IN to Photopea:
+//   • String  → executed as ExtendScript inside the editor.
+//   • Binary (ArrayBuffer) → opened as a file (the canonical way to
+//     load a PSD; far more reliable than embedding a multi-megabyte
+//     data URL into the iframe URL hash, which we used to do and
+//     which silently broke for any non-trivial PSD).
 //
-// We model each script as a Promise that resolves with the full bag of
-// echoes + buffers once Photopea sends `"done"`. Every script enqueued
-// while another is in flight is queued; we process them serially so we
-// can correctly attribute responses.
+// Two flavours of messages flow OUT from Photopea:
+//   • Strings  — return values from `app.echoToOE(...)` plus a final
+//     `"done"` after each script (and after each file open).
+//   • ArrayBuffers — produced by `app.activeDocument.saveToOE("png")`
+//     and friends.
+//
+// We process operations serially via an internal queue. Each queue
+// entry is either a script string or a binary buffer; both end with
+// the same `"done"` signal so the bridge can attribute responses
+// uniformly.
 
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState, useCallback } from 'react'
 
-const PHOTOPEA_BASE = 'https://www.photopea.com'
+// Plain Photopea URL — no big payload in the hash. We deliberately
+// avoid passing a `script` config because Photopea on first boot
+// can swallow long hashes (URL length limits + URI parsing) which
+// caused the "iframe loads but nothing happens" bug.
+const PHOTOPEA_URL = 'https://www.photopea.com#%7B%22environment%22%3A%7B%7D%7D'
 
-// Build a Photopea URL with an `init` script that opens a remote PSD,
-// loads custom fonts and disables the welcome dialog.
-function buildPhotopeaUrl({ initScript } = {}) {
-  if (!initScript) return PHOTOPEA_BASE
-  // Photopea's `?#` query expects a JSON config. The `script` field is
-  // executed once the app is ready.
-  const cfg = { environment: { menus: [['File', '-', 'Image', 'Layer', 'Edit']] }, script: initScript }
-  return `${PHOTOPEA_BASE}#${encodeURIComponent(JSON.stringify(cfg))}`
+// Per-operation timeout. Photopea normally responds in tens of
+// milliseconds; 30s is generous for very large PSDs.
+const OP_TIMEOUT_MS = 30000
+
+/** Coerce any "PSD-ish" input into a transferable ArrayBuffer. */
+async function coerceToArrayBuffer(input) {
+  if (input instanceof ArrayBuffer) return input
+  if (input && input.buffer instanceof ArrayBuffer) return input.buffer // TypedArray
+  if (typeof input === 'string') {
+    // Works for both data: URLs and same-origin http(s) URLs.
+    const r = await fetch(input)
+    return r.arrayBuffer()
+  }
+  throw new Error('PhotopeaFrame.loadPsd: unsupported input type')
 }
 
 const PhotopeaFrame = forwardRef(function PhotopeaFrame(
-  { className, style, onReady, onError, initialPsdDataUrl, fonts },
+  { className, style, onReady, onError },
   ref,
 ) {
   const iframeRef = useRef(null)
-  const queueRef = useRef([])           // pending scripts: [{ script, resolve, reject, echoes, buffers }]
-  const inFlightRef = useRef(null)      // currently-executing script item
+  // Queue entry shape:
+  //   { payload: string | ArrayBuffer, resolve, reject,
+  //     echoes: string[], buffers: ArrayBuffer[], timeoutId? }
+  const queueRef = useRef([])
+  const inFlightRef = useRef(null)
+  // Mirror of `ready` for use inside the message handler (avoids stale
+  // closures when the listener re-runs).
+  const readyRef = useRef(false)
   const [ready, setReady] = useState(false)
 
-  // ── Send the next script in the queue ──────────────────────────────
+  // ── Drain: pop one queue entry and post it to Photopea. ────────────
   const drain = useCallback(() => {
     if (inFlightRef.current) return
     const next = queueRef.current.shift()
     if (!next) return
     inFlightRef.current = next
+    // Safety net — if Photopea never replies (it always should), let
+    // the caller's promise reject instead of hanging forever.
+    next.timeoutId = setTimeout(() => {
+      if (inFlightRef.current === next) {
+        inFlightRef.current = null
+        next.reject?.(new Error('Photopea timed out'))
+        drain()
+      }
+    }, OP_TIMEOUT_MS)
     try {
-      iframeRef.current?.contentWindow?.postMessage(next.script, '*')
+      iframeRef.current?.contentWindow?.postMessage(next.payload, '*')
     } catch (e) {
+      clearTimeout(next.timeoutId)
       next.reject?.(e)
       inFlightRef.current = null
       drain()
     }
   }, [])
 
-  // Public method: run an arbitrary Photopea script string. Resolves
-  // with { echoes: string[], buffers: ArrayBuffer[] }.
-  const run = useCallback((script) => {
+  // ── run(script) — execute ExtendScript and resolve with echoes. ───
+  const run = useCallback((script) => new Promise((resolve, reject) => {
+    queueRef.current.push({
+      payload: script, resolve, reject, echoes: [], buffers: [],
+    })
+    drain()
+  }), [drain])
+
+  // ── loadPsd(input) — open a PSD inside Photopea. ──────────────────
+  // Steps, all enqueued serially so they run in order:
+  //   1. Close any existing documents (avoids stacking tabs when the
+  //      admin uploads a second PSD on top of the first).
+  //   2. Post the raw bytes — Photopea opens any binary message as a
+  //      file and emits `"done"` when the open completes.
+  //   3. A heartbeat `app.echoToOE("PSD_LOADED:N")` whose reply is what
+  //      the outer caller actually awaits, so we can distinguish a
+  //      successful open (N>=1) from a malformed file (N=0).
+  const loadPsd = useCallback(async (input) => {
+    const buf = await coerceToArrayBuffer(input)
     return new Promise((resolve, reject) => {
-      queueRef.current.push({ script, resolve, reject, echoes: [], buffers: [] })
+      // 1) Close existing docs.
+      queueRef.current.push({
+        payload: 'while (app.documents.length > 0) { try { app.documents[0].close(SaveOptions.DONOTSAVECHANGES); } catch(e) { break; } } app.echoToOE("CLEARED");',
+        resolve: () => {}, reject: () => {}, // don't fail the outer promise on this
+        echoes: [], buffers: [],
+      })
+      // 2) Post the PSD bytes as a binary message. Photopea opens it.
+      queueRef.current.push({
+        payload: buf,
+        resolve: () => {}, reject: () => {},
+        echoes: [], buffers: [],
+      })
+      // 3) Verify a document is now open.
+      queueRef.current.push({
+        payload: 'app.echoToOE("PSD_LOADED:" + app.documents.length);',
+        resolve: (data) => {
+          const ok = data.echoes.some(e => /^PSD_LOADED:[1-9]/.test(e))
+          if (ok) resolve(data)
+          else reject(new Error('Photopea opened the file but no document is active. PSD may be corrupt or unsupported.'))
+        },
+        reject,
+        echoes: [], buffers: [],
+      })
       drain()
     })
   }, [drain])
 
-  // ── postMessage handling ──────────────────────────────────────────
+  // ── postMessage handler ───────────────────────────────────────────
   useEffect(() => {
     function onMessage(e) {
       if (!iframeRef.current || e.source !== iframeRef.current.contentWindow) return
       const data = e.data
-      // Photopea sends "done" after every script completes, even on init.
-      // We use that to flush the in-flight slot.
+
       if (typeof data === 'string') {
-        if (!ready && data === 'done') {
-          // First "done" after the iframe is ready means init script finished.
+        // The very first "done" after the iframe finishes booting is
+        // Photopea's "I'm ready" signal. We don't have an in-flight
+        // entry at that point, so it's distinguishable.
+        if (!readyRef.current && data === 'done') {
+          readyRef.current = true
           setReady(true)
           onReady?.()
           return
         }
         if (data === 'done') {
           const item = inFlightRef.current
-          inFlightRef.current = null
-          if (item) item.resolve({ echoes: item.echoes, buffers: item.buffers })
+          if (item) {
+            clearTimeout(item.timeoutId)
+            inFlightRef.current = null
+            item.resolve({ echoes: item.echoes, buffers: item.buffers })
+          }
           drain()
           return
         }
-        // Otherwise it's an `echoToOE` payload.
+        // Echo from app.echoToOE.
         if (inFlightRef.current) inFlightRef.current.echoes.push(data)
         return
       }
-      // Binary payload (ArrayBuffer).
+      // Binary payload (export bytes).
       if (data instanceof ArrayBuffer) {
         if (inFlightRef.current) inFlightRef.current.buffers.push(data)
       }
     }
     window.addEventListener('message', onMessage)
     return () => window.removeEventListener('message', onMessage)
-  }, [drain, onReady, ready])
+  }, [drain, onReady])
 
-  // Expose imperative API to parent.
   useImperativeHandle(ref, () => ({
     isReady: () => ready,
     run,
-    /**
-     * loadPsdFromDataUrl — open a PSD already present on the host page.
-     * Photopea's `app.open` accepts http(s) and data: URLs, so this
-     * works without any server.
-     */
-    loadPsdFromDataUrl: (url) => run(`app.open(${JSON.stringify(url)});`),
-    /**
-     * loadFonts — pre-register every uploaded font so PSDs that
-     * reference them render correctly. Each font is sent via
-     * `app.activeDocument` is unrelated; Photopea exposes a global
-     * `loadAssets` helper but data URLs work via the Document Fonts
-     * folder which is hidden from the public API. As a pragmatic
-     * fallback we run `app.refresh()` after listing fonts so the user
-     * sees their custom names in the font picker (the FontFace API on
-     * the host page already registered them, which is what matters for
-     * our Konva-based customer overlay export).
-     */
-    loadFonts: async (list) => {
-      if (!Array.isArray(list) || !list.length) return
-      // Photopea reads fonts from its embedded list — we can't inject
-      // arbitrary fonts at runtime through the public API, but we can
-      // *match* by family name when admin-authored PSDs use built-in
-      // names. The host-side FontFace registration (fontManager.js)
-      // covers the customer overlay path.
-      // No-op on the iframe side, kept for symmetry / future API.
-      return list.length
-    },
-  }), [run, ready])
-
-  // ── Iframe URL — built once. We avoid changing src after mount
-  // because that would tear down Photopea and lose state. ───────────
-  const [src] = useState(() => {
-    let initScript = null
-    if (initialPsdDataUrl) {
-      // Open the PSD as the very first action.
-      initScript = `app.open(${JSON.stringify(initialPsdDataUrl)});`
-    }
-    return buildPhotopeaUrl({ initScript })
-  })
+    loadPsd,
+  }), [run, loadPsd, ready])
 
   return (
     <iframe
       ref={iframeRef}
-      src={src}
+      src={PHOTOPEA_URL}
       title="Photopea Editor"
       className={className}
       style={{ border: 0, width: '100%', height: '100%', background: '#1a1a1a', ...(style || {}) }}
-      // Photopea needs cross-origin postMessage; no sandbox attrs.
-      allow="cross-origin-isolated"
     />
   )
 })

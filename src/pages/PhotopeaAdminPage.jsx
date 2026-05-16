@@ -124,6 +124,49 @@ export default function PhotopeaAdminPage() {
     if (!isAdmin) navigate('/')
   }, [isAdmin, navigate])
 
+  // Helper: parse layer list from Photopea echoes and hydrate state.
+  const ingestLayerList = useCallback((list) => {
+    setLayers(list)
+    // Pre-fill locks for any layer whose NAME implies it (lock_* pattern).
+    const initialLocks = {}
+    for (const l of list) {
+      if (isLockLayerName(l.name)) {
+        const target = lockTargetRole(l.name)
+        if (target) {
+          const match = list.find((x) => detectLayerRole(x.name)?.role === target)
+          if (match) initialLocks[match.name] = true
+        }
+      }
+    }
+    setLocks((prev) => ({ ...initialLocks, ...prev }))
+  }, [])
+
+  // Load the current PSD into the (already-ready) Photopea iframe and
+  // immediately list layers. Centralises the open-then-inventory flow
+  // so it's identical whether triggered by the initial upload or by
+  // the iframe finishing its boot sequence.
+  const openPsdAndListLayers = useCallback(async (buffer) => {
+    if (!frameRef.current || !buffer) return
+    try {
+      setBusy(true); setBusyMsg('Đang mở PSD trong Photopea…')
+      await frameRef.current.loadPsd(buffer)
+      setBusyMsg('Đang đọc layer từ Photopea…')
+      const { echoes } = await frameRef.current.run(SCRIPT_LIST_LAYERS)
+      const echo = echoes.find((s) => typeof s === 'string' && s.startsWith('LAYERS:'))
+      if (!echo) {
+        toast('Photopea đã mở PSD nhưng không trả về layer.', 'error')
+        return
+      }
+      ingestLayerList(JSON.parse(echo.slice('LAYERS:'.length)))
+      toast('Đã đọc xong layer', 'success')
+    } catch (e) {
+      console.error(e)
+      toast(e?.message || 'Không mở được PSD trong Photopea', 'error')
+    } finally {
+      setBusy(false); setBusyMsg('')
+    }
+  }, [ingestLayerList, toast])
+
   // ── PSD upload ──────────────────────────────────────────────────────
   const handlePsdUpload = useCallback(async (file) => {
     if (!file) return
@@ -136,7 +179,7 @@ export default function PhotopeaAdminPage() {
       return
     }
     try {
-      setBusy(true); setBusyMsg('Đang đọc PSD…')
+      setBusy(true); setBusyMsg('Đang đọc file…')
       const [dataUrl, buf] = await Promise.all([
         readFileAsDataURL(file),
         readFileAsArrayBuffer(file),
@@ -145,52 +188,29 @@ export default function PhotopeaAdminPage() {
       setPsdDataUrl(dataUrl)
       setPsdBuffer(buf)
       setTemplateName((prev) => prev || file.name.replace(/\.psd$/i, ''))
-      setLayers([]); setLocks({}); setSelectedName(null); setPhotopeaReady(false)
-      toast('Đã nạp PSD vào Photopea', 'success')
+      setLayers([]); setLocks({}); setSelectedName(null)
+      // If this is the first PSD, mounting <PhotopeaFrame> below will
+      // trigger handleFrameReady which then calls openPsdAndListLayers.
+      // If the iframe is already ready (admin uploaded a 2nd PSD), we
+      // need to open it ourselves.
+      if (photopeaReady) {
+        // Use a microtask so React commits psdBuffer before we read it.
+        queueMicrotask(() => openPsdAndListLayers(buf))
+      }
     } catch (e) {
       console.error(e)
       toast('Không đọc được file PSD', 'error')
     } finally {
-      setBusy(false); setBusyMsg('')
+      // Keep busy until openPsdAndListLayers takes over.
+      if (!photopeaReady) { setBusy(false); setBusyMsg('') }
     }
-  }, [toast])
+  }, [toast, photopeaReady, openPsdAndListLayers])
 
-  // ── Photopea ready → list layers ───────────────────────────────────
-  const handleFrameReady = useCallback(async () => {
+  // ── Photopea ready → open the PSD that's been waiting ─────────────
+  const handleFrameReady = useCallback(() => {
     setPhotopeaReady(true)
-    if (!frameRef.current) return
-    try {
-      setBusy(true); setBusyMsg('Đang đọc layer từ Photopea…')
-      const { echoes } = await frameRef.current.run(SCRIPT_LIST_LAYERS)
-      const echo = echoes.find((s) => typeof s === 'string' && s.startsWith('LAYERS:'))
-      if (!echo) {
-        toast('Không nhận được layer từ Photopea', 'error')
-        return
-      }
-      const list = JSON.parse(echo.slice('LAYERS:'.length))
-      setLayers(list)
-      // Pre-fill locks for any layer whose NAME implies it (lock_* pattern).
-      // Admin can still toggle, but it starts in the "locked" position.
-      const initialLocks = {}
-      for (const l of list) {
-        if (isLockLayerName(l.name)) {
-          // Mark the corresponding role layer as locked, not the marker.
-          const target = lockTargetRole(l.name)
-          if (target) {
-            // Find a layer with that role name and lock it.
-            const match = list.find((x) => detectLayerRole(x.name)?.role === target)
-            if (match) initialLocks[match.name] = true
-          }
-        }
-      }
-      setLocks(initialLocks)
-    } catch (e) {
-      console.error(e)
-      toast('Không lấy được layer từ Photopea', 'error')
-    } finally {
-      setBusy(false); setBusyMsg('')
-    }
-  }, [toast])
+    if (psdBuffer) openPsdAndListLayers(psdBuffer)
+  }, [psdBuffer, openPsdAndListLayers])
 
   // ── Lock toggle ────────────────────────────────────────────────────
   const toggleLock = useCallback((layerName) => {
@@ -433,7 +453,6 @@ export default function PhotopeaAdminPage() {
             <div className="relative flex-1 min-h-[600px]" style={{ background: '#1a1a1a' }}>
               <PhotopeaFrame
                 ref={frameRef}
-                initialPsdDataUrl={psdDataUrl}
                 onReady={handleFrameReady}
               />
               {busy && (
