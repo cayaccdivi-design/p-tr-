@@ -19,12 +19,14 @@ import TopupPage from './pages/TopupPage'
 // ── Code-split (heavy / rarely visited) ─────────────────────────────────
 // Each chunk gets its own JS bundle so the initial page load stays small.
 // Wrapped in Suspense below.
-const RemoveBgPage        = lazy(() => import('./pages/RemoveBgPage'))
-const PsdEditorPage       = lazy(() => import('./pages/PsdEditorPage'))
-const CollagePage         = lazy(() => import('./pages/CollagePage'))
-const ComposerPage        = lazy(() => import('./pages/ComposerPage'))
-const AdminComposerPage   = lazy(() => import('./pages/AdminComposerPage'))
-const CustomerEditorPage  = lazy(() => import('./pages/CustomerEditorPage'))
+const RemoveBgPage          = lazy(() => import('./pages/RemoveBgPage'))
+const PsdEditorPage         = lazy(() => import('./pages/PsdEditorPage'))
+const CollagePage           = lazy(() => import('./pages/CollagePage'))
+const ComposerPage          = lazy(() => import('./pages/ComposerPage'))
+const AdminComposerPage     = lazy(() => import('./pages/AdminComposerPage'))
+const CustomerEditorPage    = lazy(() => import('./pages/CustomerEditorPage'))
+const PhotopeaAdminPage     = lazy(() => import('./pages/PhotopeaAdminPage'))
+const PhotopeaCustomerPage  = lazy(() => import('./pages/PhotopeaCustomerPage'))
 
 function ProtectedRoute({ children }) {
   const { user } = useAuthStore()
@@ -76,8 +78,10 @@ export default function App() {
         <Route path="/downloads" element={<ProtectedRoute><DownloadsPage /></ProtectedRoute>} />
         <Route path="/composer" element={<ProtectedRoute>{lazy_(ComposerPage)}</ProtectedRoute>} />
         <Route path="/admin/composer" element={<ProtectedRoute>{lazy_(AdminComposerPage)}</ProtectedRoute>} />
+        <Route path="/admin/photopea" element={<ProtectedRoute>{lazy_(PhotopeaAdminPage)}</ProtectedRoute>} />
       </Route>
       <Route path="/editor/:productId" element={<ProtectedRoute>{lazy_(CustomerEditorPage)}</ProtectedRoute>} />
+      <Route path="/photopea/:productId" element={<ProtectedRoute>{lazy_(PhotopeaCustomerPage)}</ProtectedRoute>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )

@@ -21,6 +21,7 @@ const NAV_ITEMS = [
   { to: '/source',          icon: Code2,           label: 'Mã nguồn' },
   { to: '/downloads',       icon: Download,        label: 'Đã tải',         loginOnly: true },
   { to: '/psd-editor',      icon: Layers,          label: 'PSD Editor',     badge: 'NEW', adminOnly: true },
+  { to: '/admin/photopea',  icon: Layers,          label: 'Photopea Admin', badge: 'NEW', adminOnly: true },
   { to: '/admin/composer',  icon: Shield,          label: 'Admin Composer', badge: 'ADMIN', adminOnly: true },
 ]
 
