@@ -1,24 +1,17 @@
 import { motion } from 'framer-motion'
 import { Link } from 'react-router-dom'
 import {
-  Sparkles, Layers, LayoutGrid, Scissors, ShoppingBag, Gift,
-  ArrowRight, Play, Zap, Code2, Palette, MousePointer2,
+  Sparkles, Scissors, ShoppingBag,
+  ArrowRight, Play, Zap, Code2, Palette, MousePointer2, FolderOpen,
 } from 'lucide-react'
 
 const FEATURES = [
   {
-    icon: Layers,
-    title: 'PSD Editor trực tuyến',
-    desc: 'Mở, chỉnh sửa file PSD trực tiếp trên trình duyệt. Hỗ trợ layer, clipping mask, smart object, blend mode.',
-    color: '#6e4bff',
-    link: '/psd-editor',
-  },
-  {
-    icon: LayoutGrid,
-    title: 'Ghép ảnh Collage',
-    desc: 'Ghép nhiều ảnh với 6+ bố cục sẵn. Tùy chỉnh gap, bo góc, màu nền. Bot AI gợi ý thiết kế.',
-    color: '#ec4899',
-    link: '/collage',
+    icon: ShoppingBag,
+    title: 'Cửa hàng thiết kế',
+    desc: 'Mua thumbnail, logo, banner chất lượng cao. Chỉnh sửa trực tiếp sau khi mua với Customer Editor.',
+    color: '#10b981',
+    link: '/shop',
   },
   {
     icon: Scissors,
@@ -28,18 +21,25 @@ const FEATURES = [
     link: '/remove-bg',
   },
   {
-    icon: ShoppingBag,
-    title: 'Cửa hàng thiết kế',
-    desc: 'Mua thumbnail, logo, banner chất lượng cao. Chỉnh sửa trực tiếp sau khi mua với Customer Editor.',
-    color: '#10b981',
-    link: '/shop',
+    icon: FolderOpen,
+    title: 'Kho tài nguyên',
+    desc: '10,000+ file PSD, icon, mockup miễn phí. Tải về và sử dụng ngay không cần đăng ký.',
+    color: '#8b5cf6',
+    link: '/resources',
+  },
+  {
+    icon: Code2,
+    title: 'Source Code',
+    desc: 'Bộ code template, layout, ứng dụng nhỏ — sẵn sàng để học và mở rộng.',
+    color: '#f59e0b',
+    link: '/source',
   },
 ]
 
 const STEPS = [
   { num: '01', title: 'Đăng ký / Đăng nhập', desc: 'Tạo tài khoản miễn phí để bắt đầu sử dụng tất cả tính năng', icon: MousePointer2 },
-  { num: '02', title: 'Chọn công cụ', desc: 'PSD Editor, Ghép ảnh, Xóa nền AI, hoặc Cửa hàng thiết kế', icon: Palette },
-  { num: '03', title: 'Sáng tạo & Xuất', desc: 'Chỉnh sửa theo ý muốn, export PNG/JPG/WebP chất lượng cao', icon: Zap },
+  { num: '02', title: 'Chọn công cụ', desc: 'Cửa hàng, Xóa nền AI, Tài nguyên hoặc Source Code', icon: Palette },
+  { num: '03', title: 'Sáng tạo & Tải về', desc: 'Mua / chỉnh sửa, sau đó xuất PNG/JPG/WebP chất lượng cao', icon: Zap },
 ]
 
 export default function IntroPage() {
@@ -160,11 +160,10 @@ export default function IntroPage() {
         <h3 className="text-sm font-semibold text-white mb-4 flex items-center gap-2">
           <Code2 size={15} className="text-brand-400" /> Mã nguồn & Công nghệ
         </h3>
-        <div className="grid sm:grid-cols-4 gap-3">
+        <div className="grid sm:grid-cols-3 gap-3">
           {[
             { name: 'React 18', desc: 'UI Framework', color: 'text-cyan-400' },
             { name: 'Konva.js', desc: 'Canvas Rendering', color: 'text-emerald-400' },
-            { name: '@webtoon/psd', desc: 'PSD Parser', color: 'text-violet-400' },
             { name: 'Zustand', desc: 'State Management', color: 'text-amber-400' },
           ].map(t => (
             <div key={t.name} className="p-3 rounded-xl bg-white/[0.03] border border-white/[0.05]">

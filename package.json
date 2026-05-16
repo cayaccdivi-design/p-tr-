@@ -9,7 +9,6 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@webtoon/psd": "^0.4.0",
     "clsx": "^2.1.1",
     "framer-motion": "^11.11.1",
     "konva": "^10.3.0",
